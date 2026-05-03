@@ -1,0 +1,107 @@
+```javascript id="g7n1ax"
+const TelegramBot = require('node-telegram-bot-api');
+const express = require('express');
+const axios = require('axios');
+const fs = require('fs');
+
+const app = express();
+app.use(express.json());
+
+const bot = new TelegramBot(process.env.TOKEN_BOT, { polling: true });
+
+let db = {};
+
+// carregar banco
+if (fs.existsSync('db.json')) {
+  db = JSON.parse(fs.readFileSync('db.json'));
+}
+
+function salvar() {
+  fs.writeFileSync('db.json', JSON.stringify(db, null, 2));
+}
+
+function getUser(id) {
+  if (!db[id]) {
+    db[id] = { plano: null, pagamento: null };
+  }
+  return db[id];
+}
+
+function temAcesso(id) {
+  let user = getUser(id);
+  if (!user.plano) return false;
+
+  return new Date() <= new Date(user.plano);
+}
+
+function liberar(id) {
+  let validade = new Date();
+  validade.setDate(validade.getDate() + 30);
+
+  db[id].plano = validade;
+  salvar();
+}
+
+// START
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+`🚀 Motoca Pro
+
+/pagar para ativar`);
+});
+
+// PAGAR
+bot.onText(/\/pagar/, async (msg) => {
+  const pagamento = await axios.post(
+    "https://api.mercadopago.com/v1/payments",
+    {
+      transaction_amount: 9.9,
+      payment_method_id: "pix",
+      description: "Motoca Pro"
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.TOKEN_MP}`
+      }
+    }
+  );
+
+  let qr = pagamento.data.point_of_interaction.transaction_data.qr_code;
+  let paymentId = pagamento.data.id;
+
+  db[msg.chat.id].pagamento = paymentId;
+  salvar();
+
+  bot.sendMessage(msg.chat.id, `💰 PIX:\n${qr}`);
+});
+
+// WEBHOOK
+app.post('/webhook', async (req, res) => {
+  const paymentId = req.body.data.id;
+
+  const resp = await axios.get(
+    `https://api.mercadopago.com/v1/payments/${paymentId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.TOKEN_MP}`
+      }
+    }
+  );
+
+  if (resp.data.status === "approved") {
+    let userId = Object.keys(db).find(
+      id => db[id].pagamento == paymentId
+    );
+
+    if (userId) {
+      liberar(userId);
+      bot.sendMessage(userId, "✅ Plano ativado!");
+    }
+  }
+
+  res.sendStatus(200);
+});
+
+// servidor
+app.listen(3000, () => console.log("rodando"));
+```
